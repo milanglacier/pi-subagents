@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **BREAKING: the npm package is now `@milanglacier/pi-subagents`**, published from the [milanglacier/pi-subagents](https://github.com/milanglacier/pi-subagents) fork. `repository`, `homepage`, `bugs` and the gallery media URLs point at the fork. Migration: `pi remove npm:@tintinweb/pi-subagents`, then `pi install npm:@milanglacier/pi-subagents`.
 - **A subagent with no `thinking` set now inherits the parent session's current level** instead of pi's settings default, so `pi --thinking` and `/think` carry over the way the parent model already does. Precedence: frontmatter > `Agent` call > parent session > settings. A resumed agent keeps its recorded level.
 
 ### Fixed
