@@ -2673,6 +2673,41 @@ describe("agent-runner abort signal forwarding", () => {
   });
 });
 
+// Precedence: explicit option > agent config > parent's live level > pi's
+// settings default (the field omitted, so createAgentSession resolves it).
+describe("agent-runner thinking level", () => {
+  async function thinkingPassed(
+    parentLevel: string | undefined,
+    options: Record<string, unknown> = {},
+    agentOverrides: Record<string, unknown> = {},
+  ): Promise<unknown> {
+    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig(agentOverrides));
+    createAgentSession.mockResolvedValue({ session: createSession("OK").session });
+    await runAgent({ ...ctx, thinkingLevel: parentLevel }, "Explore", "go", { pi, ...options });
+    return createAgentSession.mock.calls[0][0].thinkingLevel;
+  }
+
+  it("inherits the parent session's level when nothing else sets one", async () => {
+    expect(await thinkingPassed("high")).toBe("high");
+  });
+
+  it("prefers the agent config over the parent", async () => {
+    expect(await thinkingPassed("high", {}, { thinking: "low" })).toBe("low");
+  });
+
+  it("prefers an explicit option over both", async () => {
+    expect(await thinkingPassed("high", { thinkingLevel: "minimal" }, { thinking: "low" })).toBe("minimal");
+  });
+
+  it("leaves the level to pi's settings when the parent reports none", async () => {
+    expect(await thinkingPassed(undefined)).toBeUndefined();
+  });
+
+  it("leaves a resumed session's level to the session, not the parent", async () => {
+    expect(await thinkingPassed("high", { resumeSessionFile: "/sessions/explore.jsonl" })).toBeUndefined();
+  });
+});
+
 // resolveDefaultModel picks the model a subagent runs on. Every failure here is
 // SILENT BY DESIGN: an unresolvable or unavailable `model:` deliberately falls
 // back to the parent's model rather than erroring, because a user's frontmatter
