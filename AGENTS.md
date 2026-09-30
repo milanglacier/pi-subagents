@@ -1,8 +1,10 @@
 # Development Rules
 
-This repo is a fork of [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents) (git remote `upstream`; `origin` is the fork, maintained by the user). For anything related to contributing to upstream, read `CONTRIBUTING.md` first — especially `## Contributing upstream`, which says how to prepare an upstream branch that carries only the material change.
-
-`CONTRIBUTING.md` also holds the process rules for this repo: issues, PRs (writing and reviewing), the changelog, and releasing. You work for the maintainer, so its maintainer sections apply to you; the contributor rule "do not edit `CHANGELOG.md`" does not, except on an upstream branch.
+This repo is a fork of
+[tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents) . For
+anything related to contributing to upstream, read `CONTRIBUTING.md` first —
+especially `## Contributing upstream`, which says how to prepare an upstream
+branch that carries only the material change.
 
 ## Conversational Style
 
