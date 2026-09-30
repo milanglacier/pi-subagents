@@ -71,7 +71,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { runInChildSessionContext } from "./child-context.js";
 import { agentMentionReminder } from "./mention.js";
-import type { SubagentType, ThinkingLevel } from "./types.js";
+import type { SubagentType } from "./types.js";
 
 export interface MentionCloneOptions {
   /** The MAIN session's context — what the spawn is attributed to, and the
@@ -142,10 +142,9 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
       ctx.sessionManager.getEntries(),
       ctx.sessionManager.getLeafId(),
     );
-    // Pi 0.82.0 added this; below it the field is absent and the clone takes
-    // the settings level instead, which is what a session that never ran
-    // `/think` is on anyway. Same shim shape as `modelRuntime` below.
-    const thinkingLevel = (ctx as { thinkingLevel?: ThinkingLevel }).thinkingLevel;
+    // Optional on the context; when absent the clone takes the settings level
+    // instead, which is what a session that never ran `/think` is on anyway.
+    const thinkingLevel = ctx.thinkingLevel;
     const created = await runInChildSessionContext(() =>
       createAgentSession({
         cwd: ctx.cwd,

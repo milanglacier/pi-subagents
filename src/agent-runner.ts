@@ -833,8 +833,12 @@ export async function runAgent(
     ctx.model, ctx.modelRegistry, agentConfig?.model,
   );
 
-  // Resolve thinking level: explicit option > agent config > undefined (inherit)
-  const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking;
+  // Resolve thinking level: explicit option > agent config > parent's live level
+  // (so `--thinking` and `/think` carry over, as the parent model does) > pi's
+  // settings default. A resume skips the parent: the reopened session restores
+  // its own recorded level.
+  const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
+    ?? (options.resumeSessionFile ? undefined : ctx.thinkingLevel);
 
   const disallowedSet = agentConfig?.disallowedTools
     ? new Set(agentConfig.disallowedTools)
