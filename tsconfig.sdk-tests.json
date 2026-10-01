@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/helpers/faux-model-backend.ts",
+    "test/helpers/pi-ai.ts",
+    "test/helpers/print-mode-runner.ts",
+    "test/e2e/mention-clone-tool-reachability.e2e.test.ts",
+    "test/e2e/isolated-provider.e2e.test.ts",
+    "test/e2e/nested-tool-scope.e2e.test.ts",
+    "test/fixtures/scope-probe.ts",
+    "test/e2e/usage-reaches-session-stats.e2e.test.ts",
+    "test/e2e/workflow.e2e.test.ts",
+    "test/foreground-concurrency-print-mode-e2e.test.ts",
+    "test/nested-delegation-e2e.test.ts",
+    "test/subagents-nested-print-mode-e2e.test.ts",
+    "test/subagents-print-mode-e2e.test.ts",
+    "test/output-file-compaction-e2e.test.ts"
+  ]
+}

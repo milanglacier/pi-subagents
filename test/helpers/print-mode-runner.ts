@@ -47,14 +47,16 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type AssistantMessage,
-  type Context,
   type FauxContentBlock,
   type FauxResponseStep,
   fauxAssistantMessage,
   fauxText,
   fauxToolCall,
+  getCurrentTools,
+  type JsonValue,
   type Model,
   type ToolCall,
+  type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import {
   type AgentSession,
@@ -62,6 +64,7 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
+  type ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -89,7 +92,7 @@ export type FauxReply = string | FauxContentBlock | FauxContentBlock[] | Assista
  * it sees — order-independent, unlike a flat FIFO `steps` list.
  */
 export type FauxResponder = (
-  context: Context,
+  context: TranscriptContext,
   state: { callCount: number },
 ) => FauxReply | Promise<FauxReply>;
 
@@ -181,18 +184,22 @@ export function agentCall(
     description: string;
     subagent_type?: string;
     run_in_background?: boolean;
-    [k: string]: unknown;
+    [k: string]: JsonValue | undefined;
   },
   opts?: { id?: string },
 ): ToolCall {
-  return fauxToolCall("Agent", { subagent_type: "general-purpose", ...args }, opts);
+  const parameters: Record<string, JsonValue> = { subagent_type: "general-purpose" };
+  for (const [key, value] of Object.entries(args)) {
+    if (value !== undefined) parameters[key] = value;
+  }
+  return fauxToolCall("Agent", parameters, opts);
 }
 
 function resolveReply(
-  reply: FauxReply | ((ctx: Context) => FauxReply),
-  ctx: Context,
+  reply: FauxReply | ((ctx: TranscriptContext) => FauxReply),
+  ctx: TranscriptContext,
 ): FauxReply {
-  return typeof reply === "function" ? (reply as (c: Context) => FauxReply)(ctx) : reply;
+  return typeof reply === "function" ? reply(ctx) : reply;
 }
 
 /**
@@ -205,12 +212,12 @@ function resolveReply(
  * Each route may be a value or a `(ctx) => value` function.
  */
 export function routeBySession(routes: {
-  parentInitial: FauxReply | ((ctx: Context) => FauxReply);
-  parentFinal?: FauxReply | ((ctx: Context) => FauxReply);
-  subagent: FauxReply | ((ctx: Context) => FauxReply);
+  parentInitial: FauxReply | ((ctx: TranscriptContext) => FauxReply);
+  parentFinal?: FauxReply | ((ctx: TranscriptContext) => FauxReply);
+  subagent: FauxReply | ((ctx: TranscriptContext) => FauxReply);
 }): FauxResponder {
   return (context) => {
-    const isParent = (context.tools ?? []).some((t) => t.name === "Agent");
+    const isParent = getCurrentTools(context.messages).some((t) => t.name === "Agent");
     if (!isParent) return resolveReply(routes.subagent, context);
     const spawned = context.messages.some(
       (m) => m.role === "toolResult" && (m as { toolName?: string }).toolName === "Agent",
@@ -278,8 +285,7 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
   // --- model backend ---
   let faux: ReturnType<typeof registerFauxProvider> | undefined;
   let model: Model<string> | undefined;
-  let modelRegistry: unknown;
-  let modelRuntime: unknown;
+  let modelRuntime: ModelRuntime | undefined;
   if (live) {
     // Explicit pin wins (options.live or PI_PROVIDER + PI_MODEL). Otherwise leave
     // `model` undefined: createAgentSession then calls findInitialModel() against
@@ -303,7 +309,6 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
       }
     }
     // Let createAgentSession build the real, auth-backed registry/runtime.
-    modelRegistry = undefined;
     modelRuntime = undefined;
   } else {
     if (!options.steps && !options.respond) {
@@ -311,10 +316,7 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
     }
     faux = registerFauxProvider({ provider: "faux", models: [{ id: "faux-1", contextWindow: 200_000 }] });
     model = faux.getModel();
-    // Structural faux registry + runtime (see faux-model-backend.ts): the parent
-    // session uses `model` directly; subagents inherit it via ctx.model since
-    // resolveDefaultModel falls back to the parent model when no model is pinned.
-    ({ modelRegistry, modelRuntime } = fauxModelBackend(model));
+    ({ modelRuntime } = await fauxModelBackend(model));
 
     // Pad the response queue: one context-branching responder per expected model
     // call. The queue is a single FIFO shared by parent + child, but every entry
@@ -357,9 +359,7 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
     cwd,
     agentDir,
     model,
-    // Structural faux registry/runtime in faux mode; undefined in live mode (defaults).
-    modelRegistry: modelRegistry as any,
-    modelRuntime: modelRuntime as any,
+    modelRuntime,
     resourceLoader: loader,
     sessionManager: SessionManager.inMemory(cwd),
     // Live: real settings so an omitted model resolves to your local default

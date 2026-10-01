@@ -33,6 +33,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Usage } from "@earendil-works/pi-ai";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PendingUsagePool } from "../../src/usage.js";
@@ -59,20 +60,19 @@ describe("subagent usage reaches the parent session's stats (real pi)", () => {
   /** A real session, in memory, on a faux model. */
   async function realSession() {
     const model = faux.getModel();
-    const backend = fauxModelBackend(model);
+    const backend = await fauxModelBackend(model);
     const { session } = await createAgentSession({
       cwd,
       sessionManager: SessionManager.inMemory(cwd),
-      model: model as any,
-      modelRegistry: backend.modelRegistry,
+      model,
       modelRuntime: backend.modelRuntime,
       tools: [],
-    } as any);
+    });
     return session;
   }
 
   /** The tool result our `Agent` tool returns, as pi would persist it. */
-  function toolResultCarrying(usage: unknown) {
+  function toolResultCarrying(usage: Usage | undefined) {
     return {
       role: "toolResult" as const,
       toolCallId: "tc-1",
@@ -94,7 +94,7 @@ describe("subagent usage reaches the parent session's stats (real pi)", () => {
       pool.add({ input: 2000, output: 600, cacheWrite: 200, cacheRead: 18_000, cost: 0.0077 });
       const usage = pool.drain();
 
-      session.sessionManager.appendMessage(toolResultCarrying(usage) as any);
+      session.sessionManager.appendMessage(toolResultCarrying(usage));
       const after = session.getSessionStats();
 
       // Exactly what we reported, on every component pi tracks — cacheRead
@@ -115,17 +115,18 @@ describe("subagent usage reaches the parent session's stats (real pi)", () => {
   });
 
   it("leaves the context-window percentage alone", async () => {
-    // pi derives context usage from assistant messages only. If that ever
-    // changed, a delegating session would look like it was filling its context
-    // with work that happened somewhere else entirely — and users would compact
-    // for no reason.
+    // Compare identical tool-result content with and without usage: Pi counts
+    // the text itself toward context, but delegated tokens must not count.
     const session = await realSession();
     try {
-      const before = session.getSessionStats().contextUsage?.percent ?? null;
+      const withoutUsage = await realSession();
+      withoutUsage.sessionManager.appendMessage(toolResultCarrying(undefined));
+      const before = withoutUsage.getSessionStats().contextUsage?.percent ?? null;
+      withoutUsage.dispose();
 
       const pool = new PendingUsagePool();
       pool.add({ input: 150_000, output: 400, cacheWrite: 100, cost: 1.5 });
-      session.sessionManager.appendMessage(toolResultCarrying(pool.drain()) as any);
+      session.sessionManager.appendMessage(toolResultCarrying(pool.drain()));
 
       expect(session.getSessionStats().contextUsage?.percent ?? null).toBe(before);
     } finally {
@@ -138,7 +139,7 @@ describe("subagent usage reaches the parent session's stats (real pi)", () => {
     const session = await realSession();
     try {
       const before = session.getSessionStats();
-      session.sessionManager.appendMessage(toolResultCarrying(undefined) as any);
+      session.sessionManager.appendMessage(toolResultCarrying(undefined));
       const after = session.getSessionStats();
 
       expect(after.tokens.input).toBe(before.tokens.input);

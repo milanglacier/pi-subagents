@@ -31,6 +31,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { extensionCanonicalName, runAgent } from "../src/agent-runner.js";
 import { registerAgents } from "../src/agent-types.js";
 import type { AgentConfig } from "../src/types.js";
+import { fauxModelBackend } from "./helpers/faux-model-backend.js";
 import { registerFauxProvider } from "./helpers/pi-ai.js";
 
 // These tests spin up the REAL pi-mono runtime (loader + dynamic extension
@@ -89,16 +90,7 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
       ]),
     );
     const model = faux.getModel();
-    const modelRegistry: any = {
-      find: () => model,
-      getAll: () => [model],
-      getAvailable: () => [model],
-      hasConfiguredAuth: () => true,
-      isUsingOAuth: () => false,
-      getApiKeyAndHeaders: async () => ({ apiKey: "faux", headers: {} }),
-      registerProvider: () => {},
-      unregisterProvider: () => {},
-    };
+    const { modelRegistry } = await fauxModelBackend(model);
     const ctx: any = { cwd, getSystemPrompt: () => "PARENT", model, modelRegistry };
 
     let active: string[] = [];

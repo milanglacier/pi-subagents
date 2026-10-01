@@ -12,33 +12,16 @@
  * So the turn happens somewhere else. The conversation is cloned into a
  * throwaway in-memory session — same messages, same system prompt, same model —
  * and that copy takes the turn off-screen. A literal clone: the session's own
- * entries, projected by pi's own `sessionEntryToContextMessages`, not
+ * active branch entries restored through SessionManager, not
  * `inherit_context`'s text rendering of them.
  *
- * Cloned from memory rather than from the session file, which cannot be relied
- * on: `SessionManager._persist` withholds every write until the first assistant
- * message lands, so a fork taken before then reads an empty file and throws.
- * `buildSessionContext()` has no such timing, and is compaction-aware — it walks
- * the leaf path and substitutes the summary for entries folded into it, so a
- * long conversation clones as what the main model is actually working from. A
- * conversation with nothing in it yet clones to nothing in it yet, which is the
- * correct answer rather than a failure.
+ * Cloned from memory so in-memory parents and an empty first turn work too.
+ * Restoring the active branch preserves compaction and context edits while
+ * giving the clone a fresh session header. Pi rebuilds provider context from
+ * those entries. The parent's live thinking level takes precedence over the
+ * restored history.
  *
- * It is also the oldest of the equivalent Pi APIs — `buildContextEntries` on
- * ReadonlySessionManager and the `sessionEntryToContextMessages` export both
- * arrived in 0.80.5 — where this one has been exported unchanged from before
- * the declared peer floor, and is the same code path (`byId` is only an index
- * cache, so passing it or not cannot change the result). Keeping the floor
- * honest costs nothing here: see the `compat-floor-pi` job.
- *
- * Its `thinkingLevel` is NOT used, and is the one place the newer API would be
- * better. `getSessionContextSettings` starts at "off" and moves only on an
- * explicit `thinking_level_change` entry, so a session where nobody ran
- * `/think` reports "off" rather than the level it is really using. Omitting the
- * field instead lets `createAgentSession` resolve it from settings, which is
- * that real level.
- *
- * Three details make the spawn belong to the real session rather than the
+ * Four details make the spawn belong to the real session rather than the
  * clone:
  *
  *   - the clone is handed the *registered* `Agent` tool, whose handler closes
@@ -61,16 +44,17 @@
  * an invisible turn with the full toolset could do invisible work.
  */
 
-import type { Model } from "@earendil-works/pi-ai";
 import {
-  buildSessionContext,
   createAgentSession,
+  DefaultResourceLoader,
   type ExtensionContext,
+  getAgentDir,
   SessionManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { runInChildSessionContext } from "./child-context.js";
 import { agentMentionReminder } from "./mention.js";
+import { parentModelRuntime } from "./parent-model-runtime.js";
 import type { SubagentType } from "./types.js";
 
 export interface MentionCloneOptions {
@@ -103,7 +87,7 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
   let spawned = false;
   const cloneAgentTool: ToolDefinition = {
     ...agentTool,
-    execute: (_cloneToolCallId, params, signal, onUpdate, _cloneCtx) => {
+    execute: (_cloneToolCallId, params, signal, onUpdate, cloneCtx) => {
       // One spawn per mention. The clone has a single tool and every reason to
       // stop after using it, but a model that decides to "also" launch a second
       // agent would do it where nobody can see and nobody asked.
@@ -125,36 +109,37 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
         { ...(params as Record<string, unknown>), run_in_background: true } as typeof params,
         signal,
         onUpdate,
-        ctx,
+        { ...ctx, tools: cloneCtx.tools, executeTool: cloneCtx.executeTool },
       );
     },
   };
 
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   try {
-    // Pi 0.80.8 moved createAgentSession from modelRegistry to modelRuntime;
-    // agent-runner.ts carries the same shim for the same reason — pass both so
-    // the clone keeps the parent's providers across the supported range.
-    const parentModelRuntime = (ctx.modelRegistry as unknown as { runtime?: unknown }).runtime;
-    // The conversation as the main session resolves it: compaction applied,
-    // branch summaries substituted.
-    const conversation = buildSessionContext(
-      ctx.sessionManager.getEntries(),
-      ctx.sessionManager.getLeafId(),
-    );
-    // Optional on the context; when absent the clone takes the settings level
-    // instead, which is what a session that never ran `/think` is on anyway.
+    const loader = new DefaultResourceLoader({
+      cwd: ctx.cwd,
+      agentDir: getAgentDir(),
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      systemPromptOverride: () => ctx.getSystemPrompt(),
+      appendSystemPromptOverride: () => [],
+    });
+    await runInChildSessionContext(() => loader.reload());
+    // Prefer the parent's live level over the restored history or settings.
     const thinkingLevel = ctx.thinkingLevel;
     const created = await runInChildSessionContext(() =>
       createAgentSession({
         cwd: ctx.cwd,
         // Nothing about the copy is worth persisting, and an in-memory manager
         // is also what keeps the real session untouched.
-        sessionManager: SessionManager.inMemory(ctx.cwd),
-        model: ctx.model as Model<never> | undefined,
+        sessionManager: SessionManager.inMemory(ctx.cwd, undefined, ctx.sessionManager.getBranch()),
+        model: ctx.model,
         ...(thinkingLevel && { thinkingLevel }),
-        modelRegistry: ctx.modelRegistry,
-        ...(parentModelRuntime !== undefined && { modelRuntime: parentModelRuntime as never }),
+        modelRuntime: parentModelRuntime(ctx.modelRegistry),
+        resourceLoader: loader,
         // An allowlist naming exactly the clone's own tool. NOT `noTools:
         // "all"`, whose doc comment ("start with no tools enabled") reads like
         // it spares custom tools and does not: it resolves to an EMPTY
@@ -165,20 +150,9 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
         // agent-runner's `tools: sessionTools` beside its nested `customTools`.
         tools: [cloneAgentTool.name],
         customTools: [cloneAgentTool],
-      } as Parameters<typeof createAgentSession>[0]),
+      }),
     );
     session = created.session;
-
-    // The clone rebuilds a system prompt from cwd and agentDir, which is close
-    // but not the live one — extensions contribute to it per turn. Copy the
-    // real thing, so the copy reasons under the instructions the user's model
-    // is actually working under.
-    const systemPrompt = ctx.getSystemPrompt?.();
-    if (systemPrompt) session.agent.state.systemPrompt = systemPrompt;
-
-    // The conversation itself. Pushed rather than assigned so the array the
-    // session was built around stays the one it goes on using.
-    session.agent.state.messages.push(...conversation.messages);
 
     // User text first, reminder after — the order Claude Code's attachment
     // renderer produces, where the reminder trails the message it is about.

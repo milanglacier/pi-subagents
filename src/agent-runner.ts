@@ -24,6 +24,7 @@ import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager } from "./nested-tools.js";
+import { parentModelRuntime } from "./parent-model-runtime.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
 import { createStructuredCapture, createStructuredOutputTool, structuredRetryPrompt } from "./structured-output.js";
@@ -46,6 +47,8 @@ export const SUBAGENT_TOOL_NAMES = {
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES: string[] = Object.values(SUBAGENT_TOOL_NAMES);
+const TOOL_SCOPE_EXTENSION_NAME = "pi-subagents-tool-scope";
+const TOOL_SCOPE_EXTENSION_PATH = `<inline:${TOOL_SCOPE_EXTENSION_NAME}>`;
 
 /**
  * Canonical name of an extension for `extensions: [...]` allowlist matching.
@@ -211,7 +214,7 @@ export function parseExtSelectors(entries: string[]): {
  * snapshotted. `registerTool` writes into the very `extension.tools` maps this reads,
  * so `inScope()` sees late arrivals on the next call.
  *
- * Two enforcement points, because neither covers the whole picture:
+ * Three enforcement points cover visibility and execution:
  *
  *   - `turn_end` re-narrows the ACTIVE set. pi emits `turn_end` immediately before
  *     `prepareNextTurn` re-snapshots `agent.state.tools`, and session listeners run
@@ -221,9 +224,10 @@ export function parseExtSelectors(entries: string[]): {
  *     `createContextSnapshot()` freezes that turn's tools immediately after — there
  *     is no hook in between. A call-time check is the only correct guard there.
  *
- * Both are installed on the session and deliberately NOT unsubscribed: they must
- * outlive the `runAgent` call so resumed/steered turns stay scoped. pi's `dispose()`
- * clears `_eventListeners`, so they die with the session rather than leaking.
+ *   - The internal extension's `tool_call` hook uses the returned predicate for
+ *     nested `ctx.executeTool()` calls, which bypass `agent.beforeToolCall`.
+ *
+ * These guards live with the session so resumed/steered turns stay scoped.
  *
  * Only meaningful when extensions are loaded — under `noExtensions`/`isolated` the
  * static `allowedToolNames` allowlist already gates the registry itself.
@@ -246,7 +250,7 @@ export function installExtensionToolScope(
      */
     readmitToolNames: Set<string>;
   },
-): void {
+): () => Set<string> {
   const { loader, toolNames, disallowedSet, extNames, narrowing, readmitToolNames } = ctx;
 
   // The names allowed right now. Mirrors the `ext:` opt-in flip: when any `ext:`
@@ -257,6 +261,7 @@ export function installExtensionToolScope(
     const keep = new Set(toolNames.filter((t) => !disallowedSet?.has(t)));
     const optInActive = extNames.size > 0;
     for (const extension of loader.getExtensions().extensions) {
+      if (extension.path === TOOL_SCOPE_EXTENSION_PATH) continue;
       const canons = extensionCanonicalNames(extension.path);
       if (optInActive && !canons.some((c) => extNames.has(c))) continue;
       // First alias that carries a narrowing set — a user won't narrow one
@@ -306,6 +311,7 @@ export function installExtensionToolScope(
     }
     return priorBeforeToolCall?.(context, signal);
   };
+  return inScope;
 }
 
 /** Default max turns. undefined = unlimited (no turn limit). */
@@ -733,10 +739,14 @@ export async function runAgent(
     noExtensions || (loadAll && !hasExcludes)
       ? undefined
       : (base) => {
-          discoveredNames = new Set(base.extensions.flatMap((e) => extensionCanonicalNames(e.path)));
+          discoveredNames = new Set(base.extensions
+            .filter((e) => e.path !== TOOL_SCOPE_EXTENSION_PATH)
+            .flatMap((e) => extensionCanonicalNames(e.path)));
           return {
             ...base,
             extensions: base.extensions.filter((e) => {
+              // Inline factories run before this filter; the guard is not user-selectable.
+              if (e.path === TOOL_SCOPE_EXTENSION_PATH) return true;
               const canons = extensionCanonicalNames(e.path);
               if (canons.some((n) => excludeNames.has(n))) return false; // exclude wins
               return loadAll || canons.some((n) => keepNames.has(n));
@@ -744,12 +754,25 @@ export async function runAgent(
           };
         };
 
+  // Fail closed until the constructed session supplies its live scope predicate.
+  let scopedToolNames = () => new Set<string>();
   const loader = new DefaultResourceLoader({
     cwd: configCwd,
     agentDir,
     noExtensions,
     additionalExtensionPaths,
     extensionsOverride,
+    extensionFactories: noExtensions ? [] : [{
+      name: TOOL_SCOPE_EXTENSION_NAME,
+      hidden: true,
+      factory: (pi) => {
+        pi.on("tool_call", (event) => {
+          if (!scopedToolNames().has(event.toolName)) {
+            return { block: true, reason: `Tool "${event.toolName}" is not available to this subagent.` };
+          }
+        });
+      },
+    }],
     noSkills,
     noPromptTemplates: true,
     noThemes: true,
@@ -806,7 +829,9 @@ export async function runAgent(
   }
   if (keepNames.size > 0 || extNames.size > 0) {
     const survivingNames = new Set(
-      loader.getExtensions().extensions.flatMap((e) => extensionCanonicalNames(e.path)),
+      loader.getExtensions().extensions
+        .filter((e) => e.path !== TOOL_SCOPE_EXTENSION_PATH)
+        .flatMap((e) => extensionCanonicalNames(e.path)),
     );
     for (const name of keepNames) {
       if (!survivingNames.has(name)) {
@@ -912,9 +937,9 @@ export async function runAgent(
   //     orchestration tools, built-ins the agent didn't ask for, and
   //     `disallowedTools`) as `excludeTools`, which pi re-applies on every
   //     registry refresh;
-  //   - enforce `ext:` narrowing on the ACTIVE set via the live `inScope()`
-  //     predicate installed after bind — the active set is what the LLM sees,
-  //     so a registry tool that is never activated is invisible and uncallable.
+  //   - enforce `ext:` narrowing on the ACTIVE set and at call time via the
+  //     live `inScope()` predicate installed after bind. Registered tools can
+  //     be called by other tools even when absent from the model's active set.
   //
   // `noExtensions`/`isolated` keeps the historical static allowlist: nothing
   // async can appear there, and a hard registry gate is the correct boundary.
@@ -979,24 +1004,12 @@ export async function runAgent(
         })
       : SessionManager.inMemory(effectiveCwd);
 
-  // Pi 0.80.8 replaced createAgentSession's modelRegistry option with
-  // modelRuntime, but ExtensionContext still exposes only the registry facade.
-  // Pass both so the full supported Pi range retains the parent's providers.
-  const parentModelRuntime = (ctx.modelRegistry as unknown as { runtime?: unknown }).runtime;
-  const sessionOpts: Parameters<typeof createAgentSession>[0] & {
-    modelRegistry: ExtensionContext["modelRegistry"];
-    modelRuntime?: unknown;
-  } = {
+  const sessionOpts: Parameters<typeof createAgentSession>[0] = {
     cwd: effectiveCwd,
     agentDir,
     sessionManager,
     settingsManager,
-    modelRegistry: ctx.modelRegistry,
-    // `as never` is what keeps this assignable across the supported Pi range:
-    // pre-0.80.8 the field exists only via the `modelRuntime?: unknown` shim
-    // above, while newer Pi types it as `ModelRuntime` — a shape an opaque
-    // `unknown` read off the private facade field can never satisfy.
-    ...(parentModelRuntime !== undefined && { modelRuntime: parentModelRuntime as never }),
+    modelRuntime: parentModelRuntime(ctx.modelRegistry),
     model,
     tools: sessionTools,
     customTools: [...nestedTools, ...structuredTools],
@@ -1036,7 +1049,7 @@ export async function runAgent(
   // handled below by re-deriving scope from the loader's live extension maps —
   // `registerTool` writes into those same maps, so late arrivals are judged too.
   if (!noExtensions) {
-    installExtensionToolScope(session, {
+    scopedToolNames = installExtensionToolScope(session, {
       loader,
       toolNames,
       disallowedSet,

@@ -1,7 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   createAgentSession,
@@ -31,7 +33,8 @@ const {
   settingsManagerCreate: vi.fn(() => ({ kind: "settings-manager", getSessionDir: settingsManagerGetSessionDir })),
 }));
 
-vi.mock("@earendil-works/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", async () => ({
+  ...await vi.importActual("@earendil-works/pi-coding-agent"),
   createAgentSession,
   // Identity, as pi's own is: `defineTool` exists for the type inference, and
   // the structured-output tool is built through it.
@@ -198,6 +201,14 @@ const ctx = {
 } as any;
 
 const pi = {} as any;
+let runtime: ModelRuntime;
+beforeAll(async () => {
+  runtime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(),
+    modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,
+  });
+  ctx.modelRegistry = new ModelRegistry(runtime);
+});
 
 beforeEach(() => {
   createAgentSession.mockReset();
@@ -301,30 +312,20 @@ describe("agent-runner final output capture", () => {
     expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).not.toHaveProperty("workflowChild");
   });
 
-  it("passes the parent model runtime while retaining the legacy model registry", async () => {
+  it("passes the validated parent model runtime", async () => {
     const { session } = createSession("AUTHENTICATED");
     createAgentSession.mockResolvedValue({ session });
-    const modelRuntime = { getAuth: vi.fn(), hasConfiguredAuth: vi.fn() };
-    const context = {
-      ...ctx,
-      modelRegistry: { ...ctx.modelRegistry, runtime: modelRuntime },
-    };
 
-    await runAgent(context, "Explore", "Say AUTHENTICATED", { pi });
+    await runAgent(ctx, "Explore", "Say AUTHENTICATED", { pi });
 
-    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({
-      modelRegistry: context.modelRegistry,
-      modelRuntime,
-    }));
+    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ modelRuntime: runtime }));
+    expect(createAgentSession.mock.calls[0][0]).not.toHaveProperty("modelRegistry");
   });
 
-  it("omits modelRuntime when the legacy registry does not expose one", async () => {
-    const { session } = createSession("LEGACY");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "Explore", "Say LEGACY", { pi });
-
-    expect(createAgentSession.mock.calls[0][0]).not.toHaveProperty("modelRuntime");
+  it("rejects an unrecognized parent runtime instead of silently losing providers", async () => {
+    await expect(runAgent({ ...ctx, modelRegistry: {} }, "Explore", "go", { pi }))
+      .rejects.toThrow("Cannot inherit parent providers");
+    expect(createAgentSession).not.toHaveBeenCalled();
   });
 
   it("suppresses AGENTS.md/CLAUDE.md/APPEND_SYSTEM.md for subagents", async () => {

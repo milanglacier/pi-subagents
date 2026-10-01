@@ -47,7 +47,7 @@ describe("output-file streaming across a real compaction (#145)", () => {
       models: [{ id: "faux-1", contextWindow: 200_000 }],
     });
     const model = faux.getModel();
-    const backend = fauxModelBackend(model);
+    const backend = await fauxModelBackend(model);
     // Context-branching responder: compaction issues a variable number of
     // model calls (summary, plus a turn-prefix summary when the cut point
     // splits a turn), so a fixed FIFO would desync. Decide from the request.
@@ -90,9 +90,7 @@ describe("output-file streaming across a real compaction (#145)", () => {
       cwd,
       agentDir,
       model,
-      // Registry for pre-0.80.8 Pi, runtime for post — each ignores the other.
-      modelRegistry: backend.modelRegistry as never,
-      modelRuntime: backend.modelRuntime as never,
+      modelRuntime: backend.modelRuntime,
       resourceLoader: loader,
       sessionManager: SessionManager.inMemory(cwd),
       settingsManager: SettingsManager.inMemory({

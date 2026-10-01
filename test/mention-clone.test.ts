@@ -13,12 +13,13 @@
  * because the caller starts the agent directly on `spawned: false` and a
  * rejection would instead lose the mention entirely.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted: vi.mock's factory is lifted above the imports, so it cannot close
 // over ordinary top-level consts.
-const { buildSessionContext, createAgentSession, inMemory } = vi.hoisted(() => ({
-  buildSessionContext: vi.fn(),
+const { createAgentSession, inMemory } = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   inMemory: vi.fn(),
 }));
@@ -27,7 +28,6 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
   const actual = await vi.importActual<any>("@earendil-works/pi-coding-agent");
   return {
     ...actual,
-    buildSessionContext,
     createAgentSession,
     SessionManager: { ...actual.SessionManager, inMemory },
   };
@@ -42,12 +42,18 @@ const CONVERSATION = [
   { role: "assistant", content: [{ type: "text", text: "hello" }] },
 ] as any[];
 
+let runtime: ModelRuntime;
+beforeAll(async () => {
+  runtime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(),
+    modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,
+  });
+});
+
 beforeEach(() => {
   createAgentSession.mockReset();
   inMemory.mockReset();
   inMemory.mockReturnValue({ kind: "in-memory-session-manager" } as any);
-  buildSessionContext.mockReset();
-  buildSessionContext.mockReturnValue({ messages: CONVERSATION, thinkingLevel: "high", model: null } as any);
 });
 
 /** The main session's context — the one the spawn must be attributed to. */
@@ -56,11 +62,10 @@ function mainCtx(overrides: Record<string, unknown> = {}) {
     cwd: "/repo",
     model: { id: "main-model" },
     thinkingLevel: "high",
-    modelRegistry: { runtime: { kind: "runtime" } },
+    modelRegistry: new ModelRegistry(runtime),
     getSystemPrompt: vi.fn(() => "the live system prompt"),
     sessionManager: {
-      getEntries: vi.fn(() => [{ type: "message" }] as any[]),
-      getLeafId: vi.fn(() => "leaf-1"),
+      getBranch: vi.fn(() => CONVERSATION),
     },
     ...overrides,
   } as any;
@@ -137,10 +142,8 @@ describe("cloning the conversation", () => {
 
     await runMentionClone(opts());
 
-    expect(session.agent.state.messages).toEqual([
-      { role: "user", content: [{ type: "text", text: "hi" }] },
-      { role: "assistant", content: [{ type: "text", text: "hello" }] },
-    ]);
+    expect(inMemory).toHaveBeenCalledWith("/repo", undefined, CONVERSATION);
+    expect(session.agent.state.messages).toEqual([]);
   });
 
   it("takes the conversation from memory, never from the session file", async () => {
@@ -152,7 +155,7 @@ describe("cloning the conversation", () => {
 
     await runMentionClone(o);
 
-    expect(buildSessionContext).toHaveBeenCalledWith([{ type: "message" }], "leaf-1");
+    expect(o.ctx.sessionManager.getBranch).toHaveBeenCalled();
     expect(createAgentSession.mock.calls[0][0].sessionManager).toEqual({
       kind: "in-memory-session-manager",
     });
@@ -172,7 +175,6 @@ describe("cloning the conversation", () => {
     // "off". Passing that would silently think less than the user asked for;
     // omitting it lets createAgentSession resolve the real level from settings.
     // Also the path where ctx has no thinkingLevel at all.
-    buildSessionContext.mockReturnValue({ messages: CONVERSATION, thinkingLevel: "off", model: null } as any);
     const o = opts({ ctx: mainCtx({ thinkingLevel: undefined }) });
     cloneSession(callsAgent());
 
@@ -185,15 +187,15 @@ describe("cloning the conversation", () => {
     // First input of a fresh session. There is no history to carry, which is an
     // answer and not a failure — the copy still runs on the main model and
     // system prompt, and still makes the call.
-    buildSessionContext.mockReturnValue({ messages: [], thinkingLevel: "medium", model: null } as any);
     const o = opts();
+    o.ctx.sessionManager.getBranch.mockReturnValue([]);
     const session = cloneSession(callsAgent());
 
     const result = await runMentionClone(o);
 
     expect(result).toEqual({ spawned: true });
     expect(session.agent.state.messages).toEqual([]);
-    expect(session.agent.state.systemPrompt).toBe("the live system prompt");
+    expect(session.createdWith.resourceLoader.getSystemPrompt()).toBe("the live system prompt");
   });
 
   it("carries the live system prompt rather than the one it rebuilt", async () => {
@@ -203,7 +205,8 @@ describe("cloning the conversation", () => {
 
     await runMentionClone(opts());
 
-    expect(session.agent.state.systemPrompt).toBe("the live system prompt");
+    expect(session.createdWith.resourceLoader.getSystemPrompt()).toBe("the live system prompt");
+    expect(session.agent.state.systemPrompt).toBe("rebuilt-from-cwd");
   });
 
   it("inherits the parent's model, thinking level and providers", async () => {
@@ -214,7 +217,7 @@ describe("cloning the conversation", () => {
     const built = createAgentSession.mock.calls[0][0];
     expect(built.model).toEqual({ id: "main-model" });
     expect(built.thinkingLevel).toBe("high");
-    expect(built.modelRuntime).toEqual({ kind: "runtime" });
+    expect(built.modelRuntime).toBe(runtime);
   });
 
   it("gives the clone the Agent tool and nothing else", async () => {
@@ -270,7 +273,7 @@ describe("attributing the spawn to the real session", () => {
     await runMentionClone(o);
 
     expect(tool.execute).toHaveBeenCalledTimes(1);
-    expect(tool.execute.mock.calls[0][4]).toBe(o.ctx);
+    expect(tool.execute.mock.calls[0][4]).toMatchObject(o.ctx);
   });
 
   it("passes no tool-call id, since the real session issued none", async () => {

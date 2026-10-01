@@ -33,6 +33,7 @@ import { runAgent } from "../src/agent-runner.js";
 import { getAgentConfig, registerAgents } from "../src/agent-types.js";
 import { loadCustomAgents } from "../src/custom-agents.js";
 import { resolveAgentInvocationConfig } from "../src/invocation-config.js";
+import { fauxModelBackend } from "./helpers/faux-model-backend.js";
 import { registerFauxProvider } from "./helpers/pi-ai.js";
 
 // Real pi-mono (loader + dynamic extension import + session construction) — a
@@ -99,16 +100,7 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
 
   async function runScenario(agentName: string): Promise<{ active: string[]; prompt: string }> {
     const model = faux.getModel();
-    const modelRegistry: any = {
-      find: () => model,
-      getAll: () => [model],
-      getAvailable: () => [model],
-      hasConfiguredAuth: () => true,
-      isUsingOAuth: () => false,
-      getApiKeyAndHeaders: async () => ({ apiKey: "faux", headers: {} }),
-      registerProvider: () => {},
-      unregisterProvider: () => {},
-    };
+    const { modelRegistry } = await fauxModelBackend(model);
     // cwd = fixtures dir so the templates' relative extensions: paths resolve.
     // getSystemPrompt returns a distinctive marker so prompt_mode: append can be
     // proven to inherit the parent prompt.
