@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, type ExtensionContext, SessionManager, SettingsManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runMentionClone } from "../../src/mention-clone.js";
 import { fauxModelBackend } from "../helpers/faux-model-backend.js";
 import { registerFauxProvider } from "../helpers/pi-ai.js";
@@ -57,23 +57,16 @@ describe("mention clone against real Pi", () => {
     const before = structuredClone(manager.getEntries());
     const parentId = manager.getSessionId();
     let request: TranscriptContext | undefined;
-    let calls = 0;
+    let nestedCallIsError: boolean | undefined;
+    const execute = vi.fn<ToolDefinition["execute"]>(async (_id, _params, _signal, _update, toolCtx) => {
+      const denied = await toolCtx.executeTool("bash", { command: "false" });
+      nestedCallIsError = denied.isError;
+      return { content: [{ type: "text", text: "Started" }], details: {} };
+    });
     const agentTool: ToolDefinition = {
       name: "Agent", label: "Agent", description: "Spawn one agent",
       parameters: Type.Object({ prompt: Type.String(), run_in_background: Type.Boolean() }),
-      async execute(id, params, _signal, _update, toolCtx) {
-        calls++;
-        expect(id).toBeUndefined();
-        expect(params).toMatchObject({ run_in_background: true });
-        expect(toolCtx.sessionManager).toBe(ctx.sessionManager);
-        expect(toolCtx.sessionManager.getSessionId()).toBe(parentId);
-        expect(toolCtx.cwd).toBe(cwd);
-        expect(toolCtx.modelRegistry).toBe(ctx.modelRegistry);
-        expect(toolCtx.tools.map(tool => tool.name)).toEqual(["Agent"]);
-        const denied = await toolCtx.executeTool("bash", { command: "false" });
-        expect(denied.isError).toBe(true);
-        return { content: [{ type: "text", text: "Started" }], details: {} };
-      },
+      execute,
     };
     faux.setResponses([
       (context, options) => {
@@ -89,7 +82,16 @@ describe("mention clone against real Pi", () => {
     ]);
     const result = await runMentionClone({ ctx, type: "Explore", message: "MENTION-MESSAGE", agentTool });
     expect(result).toEqual({ spawned: true });
-    expect(calls).toBe(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const [id, params, , , toolCtx] = execute.mock.calls[0];
+    expect(id).toBeUndefined();
+    expect(params).toMatchObject({ run_in_background: true });
+    expect(toolCtx.sessionManager).toBe(ctx.sessionManager);
+    expect(toolCtx.sessionManager.getSessionId()).toBe(parentId);
+    expect(toolCtx.cwd).toBe(cwd);
+    expect(toolCtx.modelRegistry).toBe(ctx.modelRegistry);
+    expect(toolCtx.tools.map(tool => tool.name)).toEqual(["Agent"]);
+    expect(nestedCallIsError).toBe(true);
     if (!request) throw new Error("Custom provider was not invoked");
     expect(getCurrentSystemPrompt(request.messages)).toContain("LIVE-PARENT-PROMPT");
     expect(getCurrentTools(request.messages).map(tool => tool.name)).toEqual(["Agent"]);
