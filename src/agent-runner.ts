@@ -18,6 +18,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getMemoryToolNames, getReadOnlyMemoryToolNames, getToolNamesForType } from "./agent-types.js";
+import { builtinExtensions } from "./builtin-extensions.js";
 import { runInChildSessionContext } from "./child-context.js";
 import { buildParentContext, extractText } from "./context.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
@@ -55,7 +56,8 @@ const TOOL_SCOPE_EXTENSION_PATH = `<inline:${TOOL_SCOPE_EXTENSION_NAME}>`;
  * Lowercased — extension names match case-insensitively so `extensions: [Mcp]`
  * resolves the same as `[mcp]`. Tool names within `ext:foo/bar` are not affected.
  * Directory extensions (`foo/index.ts`) resolve to the parent directory name;
- * single-file extensions to the basename minus `.ts`/`.js`.
+ * single-file extensions to the basename minus `.ts`/`.js`. Pi's built-ins keep
+ * their `builtin:<name>` path, the name pi's own `extensions` setting uses.
  */
 export function extensionCanonicalName(extPath: string): string {
   const base = basename(extPath);
@@ -113,6 +115,11 @@ function extensionPackageName(extPath: string): string | undefined {
   }
 }
 
+/** Pi's non-file extension paths: built-ins (`builtin:<name>`) and inline factories (`<inline:name>`). */
+function isSyntheticExtensionPath(extPath: string): boolean {
+  return extPath.startsWith("builtin:") || extPath.startsWith("<");
+}
+
 /**
  * All names an extension answers to for allowlist matching (lowercased): its
  * path-derived {@link extensionCanonicalName} plus, when a pi package manifest
@@ -123,6 +130,9 @@ function extensionPackageName(extPath: string): string | undefined {
  */
 export function extensionCanonicalNames(extPath: string): string[] {
   const canonical = extensionCanonicalName(extPath);
+  // Synthetic paths (`builtin:mcp`, `<inline:…>`) have no package to climb
+  // from; resolving one would read the cwd's package.json instead.
+  if (isSyntheticExtensionPath(extPath)) return [canonical];
   const pkg = extensionPackageName(extPath);
   return pkg && pkg !== canonical ? [canonical, pkg] : [canonical];
 }
@@ -214,6 +224,14 @@ export function parseExtSelectors(entries: string[]): {
  * snapshotted. `registerTool` writes into the very `extension.tools` maps this reads,
  * so `inScope()` sees late arrivals on the next call.
  *
+ * Activation itself is pi's: the `defaultTools` setting at construction, `direct`
+ * tools as they register, `tool_search` loading deferred ones on demand. Scoping
+ * only ever REMOVES from the active set. Adding every in-scope tool would bypass
+ * `defaultActive: false` (codemode, tool_search) and declare `codemode`/`deferred`
+ * exposure tools straight to the model. The one widening is at install: built-ins
+ * the agent asked for that pi's default set leaves inactive (grep/find/ls), and
+ * injected tools.
+ *
  * Three enforcement points cover visibility and execution:
  *
  *   - `turn_end` re-narrows the ACTIVE set. pi emits `turn_end` immediately before
@@ -282,9 +300,9 @@ export function installExtensionToolScope(
     return keep;
   };
 
-  const renarrow = () => {
+  const narrow = (names: string[]) => {
     const allowed = inScope();
-    const next = session.getAllTools().map((t) => t.name).filter((n) => allowed.has(n));
+    const next = [...new Set(names)].filter((n) => allowed.has(n));
     const current = session.getActiveToolNames();
     // setActiveToolsByName unconditionally rebuilds the system prompt, so skip
     // the no-op that steady-state turns would otherwise pay for every turn.
@@ -292,10 +310,14 @@ export function installExtensionToolScope(
       session.setActiveToolsByName(next);
     }
   };
+  const renarrow = () => narrow(session.getActiveToolNames());
 
-  // Activate what registered during session_start (eager MCP servers); pi would
-  // otherwise leave only its four default built-ins active at turn 1.
-  renarrow();
+  const registered = new Set(session.getAllTools().map((t) => t.name));
+  narrow([
+    ...session.getActiveToolNames(),
+    ...toolNames.filter((n) => registered.has(n)),
+    ...[...readmitToolNames].filter((n) => registered.has(n)),
+  ]);
 
   session.subscribe((event: AgentSessionEvent) => {
     if (event.type === "turn_end") renarrow();
@@ -695,11 +717,12 @@ export async function runAgent(
   const agentDir = getAgentDir();
 
   // Extension loading:
-  // - true  → all default-discovered extensions
+  // - true  → all default-discovered extensions, pi's built-ins included
   // - false → none (noExtensions)
   // - string[] → loader-level allowlist. Bare names keep the matching
-  //   default-discovered extension; path entries load that extension fresh;
-  //   "*" keeps all default-discovered extensions. Excluded extensions never
+  //   default-discovered extension (built-ins as `builtin:mcp`); path entries
+  //   load that extension fresh; "*" keeps all default-discovered extensions.
+  //   Excluded extensions never
   //   bind handlers or register tools (their factory still runs once).
   //
   // Suppress AGENTS.md/CLAUDE.md and APPEND_SYSTEM.md — upstream's
@@ -754,15 +777,25 @@ export async function runAgent(
           };
         };
 
+  // Shared by the loader and the session, as the CLI does. Project trust is the
+  // parent's: `SettingsManager.create` defaults to trusted, which would load a
+  // project's settings, extensions and `mcp.json` the parent declined.
+  const settingsManager = SettingsManager.create(configCwd, agentDir, {
+    projectTrusted: ctx.isProjectTrusted(),
+  });
+
   // Fail closed until the constructed session supplies its live scope predicate.
   let scopedToolNames = () => new Set<string>();
   const loader = new DefaultResourceLoader({
     cwd: configCwd,
     agentDir,
+    settingsManager,
     noExtensions,
     additionalExtensionPaths,
     extensionsOverride,
-    extensionFactories: noExtensions ? [] : [{
+    // Pi's built-ins load only when supplied (see builtin-extensions.ts), and
+    // like pi's `--no-extensions`, no extensions means none of them either.
+    extensionFactories: noExtensions ? [] : [...builtinExtensions(), {
       name: TOOL_SCOPE_EXTENSION_NAME,
       hidden: true,
       factory: (pi) => {
@@ -981,7 +1014,6 @@ export async function runAgent(
     sessionExcludeTools = [...denyTools];
   }
 
-  const settingsManager = SettingsManager.create(configCwd, agentDir);
   const configuredSessionDir = resolveConfiguredSessionDir(agentConfig?.sessionDir, effectiveCwd);
   const defaultSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR ?? settingsManager.getSessionDir?.();
   // Frontmatter wins when it says anything; otherwise the project default,
@@ -1043,11 +1075,11 @@ export async function runAgent(
   });
 
   // With `allowedToolNames` unset, the registry is scoped by `excludeTools` but
-  // the ACTIVE set still needs managing: pi activates only its four default
-  // built-ins at turn 1, and `ext:` narrowing has no registry-level expression
-  // (we can't deny the name of a tool that hasn't registered yet). Both are
-  // handled below by re-deriving scope from the loader's live extension maps —
-  // `registerTool` writes into those same maps, so late arrivals are judged too.
+  // the ACTIVE set still needs managing: pi's default set omits grep/find/ls,
+  // and `ext:` narrowing has no registry-level expression (we can't deny the
+  // name of a tool that hasn't registered yet). Both are handled below by
+  // re-deriving scope from the loader's live extension maps — `registerTool`
+  // writes into those same maps, so late arrivals are judged too.
   if (!noExtensions) {
     scopedToolNames = installExtensionToolScope(session, {
       loader,

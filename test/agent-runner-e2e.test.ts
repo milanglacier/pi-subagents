@@ -91,7 +91,7 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
     );
     const model = faux.getModel();
     const { modelRegistry } = await fauxModelBackend(model);
-    const ctx: any = { cwd, getSystemPrompt: () => "PARENT", model, modelRegistry };
+    const ctx: any = { cwd, getSystemPrompt: () => "PARENT", isProjectTrusted: () => true, model, modelRegistry };
 
     let active: string[] = [];
     try {

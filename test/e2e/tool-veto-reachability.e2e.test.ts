@@ -99,7 +99,7 @@ describe("tool veto reachability against real pi-mono", () => {
 
     const model = faux.getModel();
     const { modelRegistry } = await fauxModelBackend(model);
-    const ctx: any = { cwd, getSystemPrompt: () => "PARENT", model, modelRegistry };
+    const ctx: any = { cwd, getSystemPrompt: () => "PARENT", isProjectTrusted: () => true, model, modelRegistry };
 
     let priorIsFunction: boolean | undefined;
     let session: any;

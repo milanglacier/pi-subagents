@@ -303,7 +303,7 @@ All fields are optional — sensible defaults for everything.
 | `display_name` | the type | Label shown in the UI (widget, agent list, badges) — cosmetic only, and independent of `name`. Claude Code has no equivalent; a file that sets only `name` badges as its type, unchanged |
 | `color` | — | Background color for the agent name badge in the Agent tool header, widget, FleetView, and conversation viewer. Supports Claude Code's `red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink`, `cyan` (the values its own default theme uses); quoted six-digit hex such as `"#8B5CF6"`; and Agency Agents aliases (`amber`, `teal`, `indigo`, `gold`, `neon-green`, `neon-cyan`, `metallic-blue`, `violet`, `rose`, `lime`, `gray`/`grey`, `fuchsia`, `slate`, `navy`). Badge text is black or white, whichever clears 4.5:1 against the rendered background — Claude Code uses one inverse color for every badge. Invalid values render no badge and preserve each surface's existing theme foreground |
 | `tools` | all 7 | Which tools the agent can call. Built-in names (`read, grep, …`), `*` / `all` (all built-ins), `none`, and `ext:<extension>` / `ext:<extension>/<tool>` selectors for extension tools. See [Tool & extension scoping](#tool--extension-scoping) below |
-| `extensions` | `true` | Which extensions to load for the agent. `true` (all defaults), `false` (none), or an explicit list: `[mcp, "/abs/path.ts", "*"]`. See [Tool & extension scoping](#tool--extension-scoping) below |
+| `extensions` | `true` | Which extensions to load for the agent. `true` (all defaults, pi's built-ins included), `false` (none), or an explicit list: `[mcp, "/abs/path.ts", "*"]`. See [Tool & extension scoping](#tool--extension-scoping) below |
 | `exclude_extensions` | — | Extension denylist applied after `extensions:` — exclude wins. Plain names only (case-insensitive), no paths or `*`. Useful with `extensions: true` to drop one extension (e.g. `pi-notify`) |
 | `skills` | `true` | `true` inherits the parent's skills; `false` inherits none. A comma-separated list preloads **only** those skills into the system prompt and does not inherit the rest (see [Skill Preloading](#skill-preloading) for discovery locations) |
 | `memory` | — | Persistent agent memory scope: `project`, `local`, or `user`. Auto-detects read-only agents |
@@ -353,7 +353,7 @@ Because a subagent session never activates this extension (that is what keeps a 
 `extensions:` decides **which extensions load**, `tools:` decides **which tools surface to the LLM**. They compose:
 
 ```yaml
-# Default (both omitted): all extensions load, all 7 built-ins surface
+# Default (both omitted): all extensions load (pi's built-ins too), all 7 built-in tools surface
 
 tools: read, grep, find           # narrow to listed built-ins; extensions still load
 tools: "*"                        # all 7 built-ins (alias: `all`)
@@ -365,6 +365,7 @@ extensions: [mcp]                 # only mcp loads
 extensions: ["*", "/abs/foo.ts"]  # all defaults plus one path-loaded extension
 
 exclude_extensions: pi-notify     # everything except pi-notify (with extensions: true)
+exclude_extensions: builtin:mcp   # everything except pi's built-in MCP support
 
 # Specialist: load one extension, expose only one of its tools, keep built-ins
 extensions: [mcp]
@@ -378,6 +379,8 @@ A few rules the examples don't make obvious:
 - `extensions:` is the sole loading authority. `ext:foo` in `tools:` narrows what surfaces; it can't load `foo` on its own. Mismatches fire `extension-error:…` warnings.
 - Any `ext:` entry flips extension tools to an explicit allowlist — unnamed extensions still load (handlers fire) but expose no tools. So `tools: "*, ext:mcp/search"` exposes only `search` from `mcp`, nothing from any other extension. These restrictions also apply to nested calls through `ctx.executeTool()`, including deferred tools, late registrations, and resumed turns.
 - Extension names match case-insensitively (`[Mcp]` = `[mcp]`); tool names in `ext:foo/bar` stay case-sensitive.
+- Pi's built-in extensions — codemode, tool search, and MCP (`mcp.json`) — load in subagents as they do in the parent session, and go by pi's own names: `builtin:codemode`, `builtin:tool-search`, `builtin:mcp`. Like any extension, an `extensions:` list must name them (`extensions: [builtin:mcp]`), `exclude_extensions:` drops them, `ext:builtin:mcp/<tool>` narrows them, and `isolated`/`extensions: false` loads none. Pi's settings still apply: `-builtin:<name>` in the `extensions` setting disables one, `defaultTools` (`+codemode`, `+tool_search`) decides whether codemode and tool search start active, and each MCP server's `exposure` decides which of its tools are declared to the model.
+- Subagents inherit the parent session's project trust: in an untrusted project they don't load the project's settings, extensions, or `mcp.json` either.
 - Extensions that register tools **lazily** work too. MCP-backed extensions typically can't enumerate their tools until their servers connect, so they register from `session_start` or `before_agent_start` rather than at load. Subagent scoping is re-derived as tools appear, so these surface normally — including under `ext:` selectors, which keep narrowing correctly no matter when a tool shows up.
 - Extensions bound into a subagent see **both ends** of that session's lifecycle: `session_start` when the agent starts, `session_shutdown` (reason `quit`) when its session is disposed — on quit, and when its record is evicted ~10 minutes after it finishes. Release per-session resources there; anything left armed outlives the session it belongs to. Handlers are given three seconds on quit, after which teardown proceeds regardless.
 - An installed **package** extension matches by its package short name (`@scope/pi-subagents` → `[pi-subagents]`), in addition to its path-derived name (a package whose entry is `src/index.ts` also answers to `[src]`). Prefer the package name — the path-derived one is incidental.
@@ -948,6 +951,7 @@ src/
 
   # Execution
   agent-runner.ts     # Session creation, execution, graceful max_turns, steer/resume
+  builtin-extensions.ts # Pi's built-in codemode/tool-search/MCP extensions for subagent sessions
   agent-manager.ts    # Agent lifecycle, concurrency queue, completion notifications
   nested-tools.ts     # Delegation tools handed to subagents (nested spawn/collect/steer)
   child-context.ts    # AsyncLocalStorage flag marking work done for a child session
