@@ -100,6 +100,10 @@ function initRepo(): string {
   execFileSync("git", ["init"], { cwd: dir, stdio: "pipe" });
   execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir, stdio: "pipe" });
   execFileSync("git", ["config", "user.name", "Test"], { cwd: dir, stdio: "pipe" });
+  // Keep the developer's global commit.gpgsign=true out of these temp repos —
+  // pinentry would block the suite. Linked worktrees share this local config,
+  // so cleanupWorktree's preservation commit is covered too.
+  execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: dir, stdio: "pipe" });
   writeFileSync(join(dir, "README.md"), "# gate");
   execFileSync("git", ["add", "README.md"], { cwd: dir, stdio: "pipe" });
   execFileSync("git", ["commit", "-m", "initial"], { cwd: dir, stdio: "pipe" });
