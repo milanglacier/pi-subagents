@@ -2,6 +2,10 @@
 
 A [pi](https://pi.dev) extension that brings **Claude Code-style autonomous sub-agents and workflow orchestration** to pi. Spawn specialized agents that run in isolated sessions — each with its own tools, system prompt, model, and thinking level. Run them in the background (the default) or block on them, steer them mid-run, resume completed sessions, and define your own custom agent types. When the orchestration shouldn't be improvised, hand a deterministic JavaScript script to the `SubagentWorkflow` tool — `agent()`, `parallel()`, `pipeline()` — and scripts written for Claude Code's `Workflow` tool run here unchanged.
 
+> **Note:** I am currently experimenting with
+> [pi-multi-agent-skill](https://github.com/milanglacier/pi-multi-agent-skill)
+> as a lightweight replacement for this extension.
+
 <img width="600" alt="pi-subagents screenshot" src="https://github.com/milanglacier/pi-subagents/raw/main/media/screenshot.png" />
 
 
