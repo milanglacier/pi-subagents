@@ -118,19 +118,19 @@ describe("subagent usage reaches the parent session's stats (real pi)", () => {
     // Compare identical tool-result content with and without usage: Pi counts
     // the text itself toward context, but delegated tokens must not count.
     const session = await realSession();
+    const baseline = await realSession();
     try {
-      const withoutUsage = await realSession();
-      withoutUsage.sessionManager.appendMessage(toolResultCarrying(undefined));
-      const before = withoutUsage.getSessionStats().contextUsage?.percent ?? null;
-      withoutUsage.dispose();
-
       const pool = new PendingUsagePool();
       pool.add({ input: 150_000, output: 400, cacheWrite: 100, cost: 1.5 });
       session.sessionManager.appendMessage(toolResultCarrying(pool.drain()));
+      baseline.sessionManager.appendMessage(toolResultCarrying(undefined));
 
-      expect(session.getSessionStats().contextUsage?.percent ?? null).toBe(before);
+      expect(session.getSessionStats().contextUsage?.percent ?? null).toBe(
+        baseline.getSessionStats().contextUsage?.percent ?? null,
+      );
     } finally {
       session.dispose?.();
+      baseline.dispose?.();
     }
   });
 

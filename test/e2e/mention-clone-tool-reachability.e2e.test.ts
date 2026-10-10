@@ -2,12 +2,29 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, type TranscriptContext } from "@earendil-works/pi-ai";
-import { createAgentSession, DefaultResourceLoader, type ExtensionContext, SessionManager, SettingsManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import type * as PiCodingAgent from "@earendil-works/pi-coding-agent";
+import { type AgentSession, createAgentSession, DefaultResourceLoader, type ExtensionContext, SessionManager, SettingsManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runMentionClone } from "../../src/mention-clone.js";
 import { fauxModelBackend } from "../helpers/faux-model-backend.js";
 import { registerFauxProvider } from "../helpers/pi-ai.js";
+
+vi.setConfig({ testTimeout: 30_000 });
+
+// Capture real sessions without replacing Pi's construction or tool filtering.
+const { sessions } = vi.hoisted(() => ({ sessions: [] as AgentSession[] }));
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+  const actual = await vi.importActual<typeof PiCodingAgent>("@earendil-works/pi-coding-agent");
+  return {
+    ...actual,
+    createAgentSession: async (options: Parameters<typeof actual.createAgentSession>[0]) => {
+      const created = await actual.createAgentSession(options);
+      sessions.push(created.session);
+      return created;
+    },
+  };
+});
 
 describe("mention clone against real Pi", () => {
   let cwd: string;
@@ -36,12 +53,71 @@ describe("mention clone against real Pi", () => {
       tools: [],
     }));
     await parent.bindExtensions({});
+    sessions.length = 0;
   });
 
   afterEach(() => {
     parent?.dispose();
     faux.unregister();
     rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("the clone's Agent tool is active on the real session, and it is the only one", async () => {
+    faux.setResponses([fauxAssistantMessage("done")]);
+    const execute = vi.fn<ToolDefinition["execute"]>(async () => ({ content: [], details: {} }));
+    const agentTool: ToolDefinition = {
+      name: "Agent", label: "Agent", description: "Spawn one agent",
+      parameters: Type.Object({ prompt: Type.String() }),
+      execute,
+    };
+
+    await runMentionClone({ ctx, type: "Explore", message: "go", agentTool });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].getActiveToolNames()).toEqual(["Agent"]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("replays the parent's conversation and replaces stale system prompt and tools", async () => {
+    const manager = parent.sessionManager;
+    manager.appendMessage({
+      role: "system", content: "", sections: { preamble: "STALE-PARENT-PROMPT" },
+      toolsAdded: [{ name: "read", description: "Read a file.", parameters: Type.Object({ path: Type.String() }) }],
+      timestamp: 0,
+    });
+    manager.appendMessage({ role: "user", content: "PARENT-HISTORY question", timestamp: 1 });
+    manager.appendMessage(fauxAssistantMessage("PARENT-HISTORY answer"));
+    const before = structuredClone(manager.getEntries());
+    let seen: TranscriptContext | undefined;
+    faux.setResponses([
+      (context) => {
+        seen = context;
+        return fauxAssistantMessage(fauxToolCall("Agent", { prompt: "go" }));
+      },
+      fauxAssistantMessage("done"),
+    ]);
+    const execute = vi.fn<ToolDefinition["execute"]>(async () => ({
+      content: [{ type: "text", text: "Agent ID: a1" }], details: {},
+    }));
+    const agentTool: ToolDefinition = {
+      name: "Agent", label: "Agent", description: "Spawn one agent",
+      parameters: Type.Object({ prompt: Type.String() }),
+      execute,
+    };
+
+    const result = await runMentionClone({ ctx, type: "Explore", message: "go", agentTool });
+
+    expect(result).toEqual({ spawned: true });
+    expect(execute).toHaveBeenCalledTimes(1);
+    if (!seen) throw new Error("Custom provider was not invoked");
+    const history = JSON.stringify(seen.messages.filter((message) => message.role !== "system"));
+    expect(history).toContain("PARENT-HISTORY question");
+    expect(history).toContain("PARENT-HISTORY answer");
+    expect(JSON.stringify(seen.messages)).toContain("STALE-PARENT-PROMPT");
+    expect(getCurrentSystemPrompt(seen.messages)).toContain("LIVE-PARENT-PROMPT");
+    expect(getCurrentSystemPrompt(seen.messages)).not.toContain("STALE-PARENT-PROMPT");
+    expect(getCurrentTools(seen.messages).map((tool) => tool.name)).toEqual(["Agent"]);
+    expect(manager.getEntries()).toEqual(before);
   });
 
   it("restores only the active branch, including compaction and edits, without changing its parent", async () => {
