@@ -1,21 +1,25 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## [1.0.0] - 2026-11-02
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+First release of the [milanglacier/pi-subagents](https://github.com/milanglacier/pi-subagents) fork. It includes upstream's 0.20.0 and starts a 1.x version line separate from upstream's 0.x releases.
 
-## [Unreleased]
+### Breaking Changes
+
+- The npm package is `@milanglacier/pi-subagents`. To migrate, run `pi remove npm:@tintinweb/pi-subagents`, then `pi install npm:@milanglacier/pi-subagents`.
 
 ### Changed
-- **BREAKING: the npm package is now `@milanglacier/pi-subagents`**, published from the [milanglacier/pi-subagents](https://github.com/milanglacier/pi-subagents) fork. `repository`, `homepage`, `bugs` and the gallery media URLs point at the fork. Migration: `pi remove npm:@tintinweb/pi-subagents`, then `pi install npm:@milanglacier/pi-subagents`.
-- **A subagent with no `thinking` set now inherits the parent session's current level** instead of pi's settings default, so `pi --thinking` and `/think` carry over the way the parent model already does. Precedence: frontmatter > `Agent` call > parent session > settings. A resumed agent keeps its recorded level.
+
+- A subagent with no `thinking` setting inherits the parent session's current thinking level, so `pi --thinking` and `/think` carry over. Precedence is agent frontmatter, the `Agent` call, the parent session, then pi's settings; a resumed agent keeps its recorded level.
+- `typebox` is the only TypeBox peer dependency (`"*"`), which avoids pi's warning about host-provided dependencies and a second TypeBox runtime.
 
 ### Fixed
-- **Subagents now load pi's built-in codemode, tool search and MCP extensions.** Pi 1.0 ships these as built-ins that only its CLI loads, so a subagent — an SDK session — never saw `codemode`, `tool_search` or any `mcp.json` tool, even as `general-purpose`. They now load for every agent with extensions, honoring the user's `-builtin:<name>`, `defaultTools` and MCP `exposure` settings; agents select them as `builtin:codemode`, `builtin:tool-search` and `builtin:mcp`. Tool scoping no longer activates every in-scope tool each turn, which would have declared inactive and deferred tools to the model, and subagents now inherit the parent's project trust instead of always trusting the project.
-- **The FleetView list no longer sits flush against pi's footer** (fixes [#351](https://github.com/tintinweb/pi-subagents/issues/351) — thanks [@KKinsz](https://github.com/KKinsz)). pi places below-editor widgets directly on its status bar with no gap, so the last agent row ran into the model/context line. The list now ends with a blank line, matching the one above `main`.
-- **FleetView arrow keys work when another extension replaces the prompt editor** (fixes [#374](https://github.com/tintinweb/pi-subagents/issues/374) — thanks [@BarrMan](https://github.com/BarrMan)). The list only handled keys while an `Editor` subclass had focus, so an editor installed via `ui.setEditorComponent` that implements pi's `EditorComponent` interface without extending `Editor` (e.g. pi-voice-stt's) left `↓`/`←` dead. The list now recognizes any focused component with `getText`/`setText`, lifting the limitation noted in the #123 fix; pi's own dialogs and selectors still keep their keys.
-- **Production schemas import pi-provided `typebox`, declared as the sole TypeBox peer (`"*"`).** This avoids pi's host-provided dependency warning and a second TypeBox runtime. `@sinclair/typebox` remains only in `devDependencies` for test fixtures.
+
+- Subagents load pi's built-in codemode, tool search, and MCP extensions, honoring the user's `-builtin:<name>`, `defaultTools`, and MCP `exposure` settings. Agents select them as `builtin:codemode`, `builtin:tool-search`, and `builtin:mcp`, and subagents inherit the parent's project trust.
+- `SubagentWorkflow` honors an agent file's `isolated: true` for the children a script spawns ([#339](https://github.com/tintinweb/pi-subagents/pull/339) by [@ajaynomics](https://github.com/ajaynomics))
+- The FleetView list leaves a blank line above pi's footer ([#351](https://github.com/tintinweb/pi-subagents/issues/351))
+- FleetView arrow keys work when another extension replaces the prompt editor with a component that does not extend `Editor` ([#374](https://github.com/tintinweb/pi-subagents/issues/374))
+- A `StructuredOutput` call that pi rejected for not matching the schema is reported to the model as a wrong answer with pi's reason, instead of as a missing answer.
 
 ## [0.20.0] - 2026-10-09
 

@@ -137,46 +137,40 @@ Inspect a PR without moving the worktree to its branch:
 
 ## Changelog
 
-Maintainer-owned; contributors don't edit it. Location: `CHANGELOG.md` (single
-file, [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format).
+Maintainer-owned; contributors don't edit it. `CHANGELOG.md` follows pi's
+changelog convention, and pi shows its new entries to users after an update.
 
-- All new entries go under `## [Unreleased]`, in the right subsection
-  (`### Added`, `### Changed`, `### Fixed`, `### Removed`, `### Security`,
-  `### Refactored`). Read the section first and append to existing
-  subsections; never duplicate them.
-- One bullet per issue/PR. Never combine separate issues or pull requests into
-  a single entry, even when they touch the same or similar components. (A PR
-  together with the issue it closes or that diagnosed it is one change — one
-  bullet citing both.)
-- Breaking changes are not a separate subsection. Call them out with a
-  `> **⚠️ Breaking: …**` blockquote at the top of the version section, and/or a
-  bold `**BREAKING:**` bullet under `### Changed`, with a migration note.
-- Entries are concise — a bold lead-in stating what changed, then a sentence or
-  two on why it changed and anything a user must do about it. Aim for 2–4
-  sentences; a genuinely intricate change may run longer, but length is never
-  the goal. Do not match the density of older entries, several of which are far
-  too long.
-- Cut what the reader doesn't need: narration of the investigation,
-  alternatives considered and rejected, restatements of the diff, and detail
-  recoverable from the code or the linked issue. Name a file or symbol only
-  when it helps someone find the change.
+- All new entries go under `## [Unreleased]`, in `### Breaking Changes` (with
+  the migration step), `### Added`, `### Changed`, `### Fixed`, or
+  `### Removed`. Read the section first and append to existing subsections;
+  never duplicate them.
+- One bullet per issue or PR. A PR and the issue it closes are one change.
+- Keep entries to one or two plain sentences written for users: what changed
+  and anything they must do. Skip docs, tests, CI, refactors, and dependency
+  bumps.
 - Released version sections (e.g. `## [0.12.0]`) are immutable; never modify
-  them.
-- Attribute external contributions, linking the repo the issue/PR lives in:
-  `... ([#456](https://github.com/milanglacier/pi-subagents/pull/456) — thanks [@username](https://github.com/username))`.
+  them. Sections up to 0.20.0 keep the upstream style.
+- Link issues and PRs in the repo where they live:
+  `Fixed foo ([#123](https://github.com/milanglacier/pi-subagents/issues/123))`.
+  Credit external contributions:
+  `Added X ([#456](https://github.com/milanglacier/pi-subagents/pull/456) by [@username](https://github.com/username))`.
 
 ## Releasing
 
-**Versioning** (all releases are `0.x`, no major bumps):
+**Versioning** follows semver from 1.0.0. The fork's 1.x line is separate from
+upstream's `0.x` versions; upstream tags are not fetched
+(`remote.upstream.tagOpt` is `--no-tags`), so they cannot clash with the
+fork's.
 
-- `minor` (`0.x.0`) — a notable new feature, or any breaking change.
-- `patch` (`0.x.y`) — bug fixes and smaller additions.
+- `major` — any breaking change.
+- `minor` — a new feature.
+- `patch` — bug fixes and smaller additions.
 
 Before a release:
 
-- Update `CHANGELOG.md` — move the `## [Unreleased]` entries under a new
-  `## [X.Y.Z]` version section, and add a fresh empty `## [Unreleased]` for the
-  next cycle.
+- Update `CHANGELOG.md` — rename `## [Unreleased]` to
+  `## [X.Y.Z] - YYYY-MM-DD`. The version must equal `version` in
+  `package.json`, because pi matches headings against it.
 - Check `README.md` and the matching guide in `docs/` cover every user-facing
   change in the release (features, settings, workflows, the event/RPC surface).
 - Run the full check suite plus the e2e tests, and fix anything that fails:
