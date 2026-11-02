@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   createStructuredCapture,
   createStructuredOutputTool,
+  recordRejectedStructuredOutput,
   STRUCTURED_OUTPUT_TOOL_NAME,
   structuredRetryPrompt,
 } from "../src/structured-output.js";
@@ -104,6 +105,60 @@ describe("the StructuredOutput tool", () => {
   it("leaves an unparseable string alone for validation to reject", async () => {
     const { tool } = build();
     expect(tool.prepareArguments?.("not json at all")).toBe("not json at all");
+  });
+});
+
+describe("a call pi rejects before the tool runs", () => {
+  const end = (overrides: { toolName?: string; isError?: boolean; durationMs?: number; text?: string } = {}) => ({
+    type: "tool_execution_end" as const,
+    toolCallId: "tc-1",
+    toolName: overrides.toolName ?? STRUCTURED_OUTPUT_TOOL_NAME,
+    isError: overrides.isError ?? true,
+    ...(overrides.durationMs === undefined ? {} : { durationMs: overrides.durationMs }),
+    result: {
+      content: [{
+        type: "text",
+        text: overrides.text
+          ?? 'Validation failed for tool "StructuredOutput":\n  - file: missing\n\nReceived arguments:\n{\n  "line": 0\n}',
+      }],
+      details: {},
+    },
+  });
+
+  it("counts as a wrong answer, with pi's reason and without the echoed arguments", () => {
+    const capture = createStructuredCapture();
+    recordRejectedStructuredOutput(capture, end());
+
+    expect(capture.called).toBe(true);
+    expect(capture.lastError).toBe('Validation failed for tool "StructuredOutput":\n  - file: missing');
+    expect(structuredRetryPrompt(capture)).toMatch(/did not match the required schema/);
+    expect(structuredRetryPrompt(capture)).not.toMatch(/did not call/i);
+  });
+
+  it("ignores calls that reached execute(), which record themselves", async () => {
+    const { tool, capture } = build();
+    await call(tool, { line: 0 });
+    const ownError = capture.lastError;
+    recordRejectedStructuredOutput(capture, end({ durationMs: 3, text: "StructuredOutput did not match" }));
+
+    expect(capture.lastError).toBe(ownError);
+  });
+
+  it("ignores other tools and successful calls", () => {
+    const capture = createStructuredCapture();
+    recordRejectedStructuredOutput(capture, end({ toolName: "read" }));
+    recordRejectedStructuredOutput(capture, end({ isError: false }));
+
+    expect(capture).toEqual(createStructuredCapture());
+  });
+
+  it("is cleared by a later valid call", async () => {
+    const { tool, capture } = build();
+    recordRejectedStructuredOutput(capture, end());
+    await call(tool, { file: "a.ts" });
+
+    expect(capture.lastError).toBeUndefined();
+    expect(JSON.parse(capture.json as string)).toEqual({ file: "a.ts" });
   });
 });
 

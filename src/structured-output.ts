@@ -15,8 +15,11 @@
  *      the schema at sampling time;
  *   2. the tool's description, snippet and guideline, which say the answer must
  *      come through this call;
- *   3. validation here, answering a bad payload with `isError` so the model
- *      sees what was wrong and calls again inside the same run.
+ *   3. validation, answering a bad payload with `isError` so the model sees
+ *      what was wrong and calls again inside the same run. pi checks the
+ *      arguments against the schema before the tool runs, and `execute()`
+ *      checks them again; {@link recordRejectedStructuredOutput} covers the
+ *      calls pi rejects, which never reach `execute()`.
  *
  * — and, when all three fail, one more prompt from `runAgent`. See
  * {@link structuredRetryPrompt}.
@@ -25,7 +28,7 @@
  * `StructuredOutput` is still telling the truth.
  */
 
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { type AgentSessionEvent, defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { CompiledSchema } from "./workflow/json-schema.js";
 
 /**
@@ -113,6 +116,38 @@ export function createStructuredOutputTool(
       return { content: [{ type: "text", text: "Recorded." }], details: {} };
     },
   }) as ToolDefinition;
+}
+
+/**
+ * Record a StructuredOutput call that pi rejected before `execute()` ran.
+ *
+ * pi validates tool arguments against the tool's schema before calling the
+ * tool, so a payload that misses a required field fails there and the tool
+ * never sees it. Without this, the capture would read as "never called", and
+ * the retry prompt would tell the model it did not answer when it answered
+ * wrongly. pi sets `durationMs` only when `execute()` ran, and the tool
+ * records those calls itself.
+ */
+export function recordRejectedStructuredOutput(
+  capture: StructuredCapture,
+  event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>,
+): void {
+  if (event.toolName !== STRUCTURED_OUTPUT_TOOL_NAME || !event.isError || event.durationMs !== undefined) return;
+  capture.called = true;
+  // pi appends the arguments it received, which the model already has.
+  const reason = resultText(event.result).split("\n\nReceived arguments:")[0].trim();
+  capture.lastError = reason || "pi rejected the call before it ran";
+}
+
+function resultText(result: unknown): string {
+  if (typeof result !== "object" || result === null || !("content" in result) || !Array.isArray(result.content)) {
+    return "";
+  }
+  return result.content
+    .flatMap((part: unknown) =>
+      typeof part === "object" && part !== null && "text" in part && typeof part.text === "string" ? [part.text] : [],
+    )
+    .join("\n");
 }
 
 /**

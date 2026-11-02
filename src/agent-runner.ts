@@ -28,7 +28,12 @@ import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager
 import { parentModelRuntime } from "./parent-model-runtime.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
-import { createStructuredCapture, createStructuredOutputTool, structuredRetryPrompt } from "./structured-output.js";
+import {
+  createStructuredCapture,
+  createStructuredOutputTool,
+  recordRejectedStructuredOutput,
+  structuredRetryPrompt,
+} from "./structured-output.js";
 import type { SubagentType, ThinkingLevel } from "./types.js";
 import type { LifetimeUsage } from "./usage.js";
 import type { CompiledSchema } from "./workflow/json-schema.js";
@@ -1126,6 +1131,7 @@ export async function runAgent(
     }
     if (event.type === "tool_execution_end") {
       options.onToolActivity?.({ type: "end", toolName: event.toolName });
+      if (structuredCapture !== undefined) recordRejectedStructuredOutput(structuredCapture, event);
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
       const u = (event.message as any).usage;

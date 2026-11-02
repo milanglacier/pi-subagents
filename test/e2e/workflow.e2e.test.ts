@@ -225,6 +225,69 @@ describe("Workflow end to end", () => {
     }
   }, 90_000);
 
+  it("tells a child whose StructuredOutput call pi rejected that the call was wrong, not missing", async () => {
+    // pi validates tool arguments against the schema before `execute()` runs,
+    // so a payload missing a required field never reaches the tool. The retry
+    // prompt must still say the call was rejected, not that it never happened.
+    const script = [
+      'export const meta = { name: "e2e-rejected-schema", description: "one structured answer" };',
+      'const found = await agent("REJECTED-TASK-MARKER", {',
+      '  label: "scan",',
+      '  schema: { type: "object", properties: { files: { type: "array", items: { type: "string" } } }, required: ["files"] },',
+      "});",
+      "return found.files.length;",
+    ].join("\n");
+
+    const retryPrompts: string[] = [];
+    const cwd = workflowProject();
+    const run = await runPrintMode({
+      prompt: "run the workflow",
+      cwd,
+      maxModelCalls: 32,
+      live: false, // scripted on purpose: a real model would not emit the tool call
+      respond: context => {
+        const isParent = getCurrentTools(context.messages).some(t => t.name === "SubagentWorkflow");
+        if (isParent) {
+          return asText(context).includes("Task ID")
+            ? fauxText("workflow launched")
+            : workflowCall(script, "wf-call-rejected");
+        }
+        const seen = asText(context);
+        if (/Recorded\./.test(seen)) return fauxText("done");
+        const retry = context.messages.find(
+          message => message.role === "user" && JSON.stringify(message.content).includes("Call StructuredOutput now"),
+        );
+        if (retry) {
+          retryPrompts.push(JSON.stringify(retry.content));
+          return fauxToolCall("StructuredOutput", { files: ["a.ts"] }, { id: "so-good" });
+        }
+        const rejected = context.messages.some(
+          message => message.role === "toolResult" && message.toolCallId === "so-bad",
+        );
+        return rejected
+          ? fauxText("an answer in prose")
+          : fauxToolCall("StructuredOutput", {}, { id: "so-bad" });
+      },
+    });
+
+    try {
+      expect(asText(run.parentSession as unknown as { messages?: unknown[] })).toContain("Task ID");
+      expect(await waitFor(() => retryPrompts.length > 0), "the child never got the retry prompt").toBe(true);
+      await run.manager?.waitForAll();
+
+      expect(retryPrompts[0]).toMatch(/did not match the required schema/);
+      expect(retryPrompts[0]).toContain("files");
+      expect(retryPrompts[0]).not.toMatch(/did not call/i);
+      // The corrected answer after the retry is the one the script receives.
+      const journals = journalsFor(cwd);
+      expect(journals).toHaveLength(1);
+      const recorded = readJournal(journals[0]);
+      expect(recorded.map(entry => JSON.parse(String(entry.text)))).toEqual([{ files: ["a.ts"] }]);
+    } finally {
+      await run.dispose?.();
+    }
+  }, 90_000);
+
   it("surfaces a script that fails to parse instead of launching it", async () => {
     const childPrompts: string[] = [];
 

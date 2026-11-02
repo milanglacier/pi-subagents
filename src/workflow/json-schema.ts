@@ -17,13 +17,14 @@
  * (a peer dependency here), so the same schema object serves both roles with no
  * conversion.
  *
- * ## Why we validate at all
+ * ## Why we validate as well as pi
  *
- * Nothing in pi checks a tool call's arguments against the tool's `parameters`.
- * `validateToolCall`/`validateToolArguments` exist in `pi-ai` but are never
- * called from either shipped package, so a schema on a tool is a *prompt to the
- * provider*, not an enforcement point. Every guarantee the script gets about
- * the shape of its result is made here.
+ * pi validates every tool call's arguments against the tool's `parameters`
+ * before the tool runs, and converts loosely typed values first (`"42"` to
+ * `42`, a single value to a one-item array). It uses its own validator, not
+ * this one, and that validator decides what reaches the tool. Checking again
+ * here keeps the guarantee the script gets about the shape of its result in
+ * this package, whatever pi's validator accepts.
  *
  * Pure and pi-free on purpose, so `runtime.ts` can import it without dragging
  * sessions and models into the runtime's tests.
