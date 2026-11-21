@@ -24,7 +24,7 @@ vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
         markdownConstructions++;
         super(...args);
       }
-      render(width: number): string[] {
+      render(width: number) {
         markdownRenderCalls++;
         // Real trigger is ~54 nested blockquotes overflowing pi-tui's recursive
         // renderer. Forced rather than reproduced: a real overflow costs ~2.4s

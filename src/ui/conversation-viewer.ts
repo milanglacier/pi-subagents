@@ -404,7 +404,7 @@ export class ConversationViewer implements Component {
   }
 
   /** Render `text` as Markdown, reusing this message's component instance. */
-  private markdownLines(msg: AgentSession["messages"][number], text: string, width: number, dim: boolean): string[] {
+  private markdownLines(msg: AgentSession["messages"][number], text: string, width: number, dim: boolean): readonly string[] {
     let entry = this.markdownCache.get(msg);
     if (!entry) {
       entry = {
